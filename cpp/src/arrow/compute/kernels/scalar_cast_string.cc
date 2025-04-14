@@ -408,8 +408,8 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
           return Status::OK();
         }
         return Status::Invalid("");
-        /*return Status::CapacityError("Failed casting from ", input.type->ToString(), " to ",
-                                   out->type()->ToString(),
+        /*return Status::CapacityError("Failed casting from ", input.type->ToString(), "
+           to ", out->type()->ToString(),
                                    ": input array too large for efficient conversion.");*/
       }
     }
@@ -424,7 +424,7 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
     }
   }
   ArrayData* output = out->array_data().get();
-  output->buffers = std::vector<std::shared_ptr<Buffer>>(3);
+  output->buffers.resize(3);
   output->buffers[2] = input.GetBuffer(2);
   output->offset = 0;
   output->SetNullCount(input.null_count);
