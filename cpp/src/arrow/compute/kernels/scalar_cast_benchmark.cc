@@ -103,14 +103,32 @@ static void CastDoubleToInt32Unsafe(benchmark::State& state) {
                                             CastOptions::Unsafe(), -1000, 1000);
 }
 
-BENCHMARK(CastInt64ToInt32Safe)->Apply(CastSetArgs);
+template <typename InputType>
+static void BenchmarkStringCast(benchmark::State& state,
+                                const std::shared_ptr<DataType>& to_type) {
+  GenericItemsArgs args(state);
+  random::RandomArrayGenerator rand(kSeed);
+  auto data_type = TypeTraits<InputType>::type_singleton();
+  auto array = rand.ArrayOf(data_type, args.size, args.null_proportion);
+  for (auto _ : state) {
+    CastOptions options;
+    ABORT_NOT_OK(Cast(array, to_type, options).status());
+  }
+}
+static void CastStringToStringViw(benchmark::State& state) {
+  BenchmarkStringCast<StringType>(state, utf8_view());
+}
+
+/*BENCHMARK(CastInt64ToInt32Safe)->Apply(CastSetArgs);
 BENCHMARK(CastInt64ToInt32Unsafe)->Apply(CastSetArgs);
 BENCHMARK(CastUInt32ToInt32Safe)->Apply(CastSetArgs);
 
 BENCHMARK(CastInt64ToDoubleSafe)->Apply(CastSetArgs);
 BENCHMARK(CastInt64ToDoubleUnsafe)->Apply(CastSetArgs);
 BENCHMARK(CastDoubleToInt32Safe)->Apply(CastSetArgs);
-BENCHMARK(CastDoubleToInt32Unsafe)->Apply(CastSetArgs);
+BENCHMARK(CastDoubleToInt32Unsafe)->Apply(CastSetArgs);*/
+BENCHMARK(CastStringToStringViw)->Apply(CastSetArgs);
+
 
 }  // namespace compute
 }  // namespace arrow

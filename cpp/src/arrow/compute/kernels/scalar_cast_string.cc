@@ -320,6 +320,16 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
   const CastOptions& options = checked_cast<const CastState&>(*ctx->state()).options;
   const ArraySpan& input = batch[0].array;
 
+  const int64_t sum_of_binary_view_sizes = util::SumOfBinaryViewSizes(
+      input.GetValues<BinaryViewType::c_type>(1), input.length);
+  if constexpr (sizeof(offset_type) == 4) {
+    if (sum_of_binary_view_sizes > std::numeric_limits<offset_type>::max()) {
+      return Status::CapacityError("Failed casting from ", input.type->ToString(), " to ",
+                                   out->type()->ToString(),
+                                   ": input array too large for efficient conversion.");
+    }
+  }
+
   if constexpr (!I::is_utf8 && O::is_utf8) {
     if (!options.allow_invalid_utf8) {
       InitializeUTF8();
@@ -341,8 +351,6 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
   OffsetBuilder offset_builder(ctx->memory_pool());
   RETURN_NOT_OK(offset_builder.Reserve(input.length + 1));
   offset_builder.UnsafeAppend(0);  // offsets start at 0
-  const int64_t sum_of_binary_view_sizes = util::SumOfBinaryViewSizes(
-      input.GetValues<BinaryViewType::c_type>(1), input.length);
   DataBuilder data_builder(ctx->memory_pool());
   RETURN_NOT_OK(data_builder.Reserve(sum_of_binary_view_sizes));
   VisitArraySpanInline<I>(
@@ -361,7 +369,19 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
   RETURN_NOT_OK(data_builder.Finish(&output->buffers[2]));
   return Status::OK();
 }
-
+template <typename O, typename I>
+enable_if_t<is_base_binary_type<I>::value && is_binary_view_like_type<O>::value,
+            Result<std::shared_ptr<ArrayData>>>
+AddStringToStringView(const ArraySpan& input) {
+  using Builder = typename TypeTraits<O>::BuilderType;
+  Builder builder;
+  ARROW_RETURN_NOT_OK(VisitArraySpanInline<I>(
+      input, [&](std::string_view s) { return builder.Append(s); },
+      [&]() { return builder.AppendNull(); }));
+  std::shared_ptr<Array> array_out;
+  RETURN_NOT_OK(builder.Finish(&array_out));
+  return array_out->data();
+}
 // Offset String -> String View
 template <typename O, typename I>
 enable_if_t<is_base_binary_type<I>::value && is_binary_view_like_type<O>::value, Status>
@@ -369,29 +389,8 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
   using offset_type = typename I::offset_type;
   const CastOptions& options = checked_cast<const CastState&>(*ctx->state()).options;
   const ArraySpan& input = batch[0].array;
-
-  if constexpr (!I::is_utf8 && O::is_utf8) {
-    if (!options.allow_invalid_utf8) {
-      InitializeUTF8();
-      ArraySpanVisitor<I> visitor;
-      Utf8Validator validator;
-      RETURN_NOT_OK(visitor.Visit(input, &validator));
-    }
-  }
-
-  // Start with a zero-copy cast, then reconfigure the view and data buffers
-  RETURN_NOT_OK(ZeroCopyCastExec(ctx, batch, out));
-  ArrayData* output = out->array_data().get();
-
-  const int64_t total_length = input.offset + input.length;
-  const auto* validity = input.GetValues<uint8_t>(0, 0);
+  const int64_t total_length = input.length;
   const auto* input_offsets = input.GetValues<offset_type>(1);
-  const auto* input_data = input.GetValues<uint8_t>(2, 0);
-
-  // Turn buffers[1] into a buffer of empty BinaryViewType::c_type entries.
-  ARROW_ASSIGN_OR_RAISE(output->buffers[1],
-                        ctx->Allocate(total_length * BinaryViewType::kSize));
-  memset(output->buffers[1]->mutable_data(), 0, total_length * BinaryViewType::kSize);
 
   // Check against offset overflow
   if constexpr (sizeof(offset_type) > 4) {
@@ -403,12 +402,42 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
         // A more complicated loop could work by slicing the data buffer into
         // more than one variadic buffer, but this is probably overkill for now
         // before someone hits this problem in practice.
-        return Status::CapacityError("Failed casting from ", input.type->ToString(),
-                                     " to ", output->type->ToString(),
-                                     ": input array too large for efficient conversion.");
+        auto result = AddStringToStringView<O, I>(input);
+        if (result.ok()) {
+          out->value = *result;
+          return Status::OK();
+        }
+        return Status::Invalid("");
+        /*return Status::CapacityError("Failed casting from ", input.type->ToString(), " to ",
+                                   out->type()->ToString(),
+                                   ": input array too large for efficient conversion.");*/
       }
     }
   }
+
+  if constexpr (!I::is_utf8 && O::is_utf8) {
+    if (!options.allow_invalid_utf8) {
+      InitializeUTF8();
+      ArraySpanVisitor<I> visitor;
+      Utf8Validator validator;
+      RETURN_NOT_OK(visitor.Visit(input, &validator));
+    }
+  }
+  ArrayData* output = out->array_data().get();
+  output->buffers = std::vector<std::shared_ptr<Buffer>>(3);
+  output->buffers[2] = input.GetBuffer(2);
+  output->offset = 0;
+  output->SetNullCount(input.null_count);
+  output->length = input.length;
+  ARROW_ASSIGN_OR_RAISE(output->buffers[0],
+                        GetOrCopyNullBitmapBuffer(input, ctx->memory_pool()));
+  const auto* validity = output->GetValues<uint8_t>(0);
+  const auto* input_data = input.GetValues<uint8_t>(2, 0);
+
+  // Turn buffers[1] into a buffer of empty BinaryViewType::c_type entries.
+  ARROW_ASSIGN_OR_RAISE(output->buffers[1],
+                        ctx->Allocate(total_length * BinaryViewType::kSize));
+  memset(output->buffers[1]->mutable_data(), 0, total_length * BinaryViewType::kSize);
 
   auto* out_views = output->GetMutableValues<BinaryViewType::c_type>(1);
 
@@ -470,6 +499,21 @@ enable_if_t<std::is_same<I, FixedSizeBinaryType>::value &&
 BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
   const CastOptions& options = checked_cast<const CastState&>(*ctx->state()).options;
   const ArraySpan& input = batch[0].array;
+  const int32_t fixed_size_width = input.type->byte_width();
+  ArrayData* output = out->array_data().get();
+  const int64_t total_length = input.length;
+  // Check against offset overflow
+  if (total_length > 0) {
+    const int64_t max_data_offset = (total_length + input.offset - 1) * fixed_size_width;
+    if (ARROW_PREDICT_FALSE(max_data_offset > std::numeric_limits<int32_t>::max())) {
+      // A more complicated loop could work by slicing the data buffer into
+      // more than one variadic buffer, but this is probably overkill for now
+      // before someone hits this problem in practice.
+      return Status::CapacityError("Failed casting from ", input.type->ToString(), " to ",
+                                   output->type->ToString(),
+                                   ": input array too large for efficient conversion.");
+    }
+  }
 
   if constexpr (!I::is_utf8 && O::is_utf8) {
     if (!options.allow_invalid_utf8) {
@@ -480,16 +524,13 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
     }
   }
 
-  const int32_t fixed_size_width = input.type->byte_width();
-  const int64_t total_length = input.offset + input.length;
-
-  ArrayData* output = out->array_data().get();
   DCHECK_EQ(output->length, input.length);
-  output->offset = input.offset;
+  output->offset = 0;
   output->buffers.resize(3);
   output->SetNullCount(input.null_count);
   // Share the validity bitmap buffer
-  output->buffers[0] = input.GetBuffer(0);
+  ARROW_ASSIGN_OR_RAISE(output->buffers[0],
+                        GetOrCopyNullBitmapBuffer(input, ctx->memory_pool()));
   // Init buffers[1] with input.length empty BinaryViewType::c_type entries.
   ARROW_ASSIGN_OR_RAISE(output->buffers[1],
                         ctx->Allocate(total_length * BinaryViewType::kSize));
@@ -498,19 +539,6 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
 
   auto data_buffer = input.GetBuffer(1);
   const auto* data = data_buffer->data();
-
-  // Check against offset overflow
-  if (total_length > 0) {
-    const int64_t max_data_offset = (total_length - 1) * fixed_size_width;
-    if (ARROW_PREDICT_FALSE(max_data_offset > std::numeric_limits<int32_t>::max())) {
-      // A more complicated loop could work by slicing the data buffer into
-      // more than one variadic buffer, but this is probably overkill for now
-      // before someone hits this problem in practice.
-      return Status::CapacityError("Failed casting from ", input.type->ToString(), " to ",
-                                   output->type->ToString(),
-                                   ": input array too large for efficient conversion.");
-    }
-  }
 
   // Inline string and non-inline string loops
   if (fixed_size_width <= BinaryViewType::kInlineSize) {

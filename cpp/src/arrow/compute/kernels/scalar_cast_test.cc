@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <arrow/util/logger.h>
+
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -3261,6 +3263,79 @@ static void AssertBinaryZeroCopy(std::shared_ptr<Array> lhs, std::shared_ptr<Arr
     }
     AssertArraysEqual(*offsets[0], *offsets[1]);
   }
+}
+#define LOG(...) ARROW_LOGGER_INFO("", __VA_ARGS__)
+template <typename I, typename O>
+void CheckCast(int string_length, int offset, int offset_lengt) {
+  using Builder = typename TypeTraits<I>::BuilderType;
+  using ArrayType = typename TypeTraits<O>::ArrayType;
+  Builder builder;
+  for (int i = 0; i < string_length; i++) {
+    if (i % 3 == 0) {
+      ASSERT_OK(builder.AppendNull());
+    } else {
+      ASSERT_OK(builder.Append(std::string(4, 'a')));
+    }
+  }
+
+  std::shared_ptr<Array> input;
+  ASSERT_OK(builder.Finish(&input));
+  CastOptions options;
+  options.to_type = TypeTraits<O>::type_singleton();
+  ASSERT_OK_AND_ASSIGN(
+      auto datum, CallFunction("cast", {input->Slice(offset, offset_lengt)}, &options));
+  auto output = datum.array_as<ArrayType>();
+  auto data = output->data();
+  LOG("Size:", data->buffers[1]->size());
+  LOG("Offset:", data->offset);
+  LOG("Length:", data->length);
+}
+void CheckFixedSize() {
+
+  FixedSizeBinaryBuilder builder(fixed_size_binary(4));
+  for (int i = 0; i < 8; i++) {
+    if (i % 3 == 0) {
+      ASSERT_OK(builder.AppendNull());
+    } else {
+      ASSERT_OK(builder.Append(std::string(4, 'a')));
+    }
+  }
+
+  std::shared_ptr<Array> input;
+  ASSERT_OK(builder.Finish(&input));
+  CastOptions options;
+  options.to_type = utf8_view();
+  ASSERT_OK_AND_ASSIGN(
+      auto datum, CallFunction("cast", {input->Slice(6, 2)}, &options));
+  auto output = datum.array_as<StringViewArray>();
+  auto data = output->data();
+  LOG("Size:", data->buffers[1]->size());
+  LOG("Offset:", data->offset);
+  LOG("Length:", data->length);
+}
+void TestLargeString() {
+  LargeStringBuilder builder;
+  LOG((int64_t{1}<<31)-1 ==std::numeric_limits<int32_t>::max());
+  for (int i = 0; i < 8; i++) {
+    ASSERT_OK(builder.Append(std::string((int64_t{1} << 31), 'a')));
+  }
+  ASSERT_OK_AND_ASSIGN(auto array, builder.Finish());
+  CastOptions options;
+  options.to_type = utf8_view();
+  auto datum_raw= CallFunction("cast", {array->Slice(1,4)}, &options);
+  LOG(datum_raw.status());
+  /*auto datum = *datum_raw;
+  LOG(datum.type()->ToString());
+  LOG(datum.length());
+  LOG(datum.array_as<StringViewArray>()->GetString(0)[0]);
+  LOG(datum.array_as<StringViewArray>()->data()->buffers[2]->size());*/
+
+}
+TEST(MY, CastStringToStringView) {
+  /*CheckCast<StringType, StringViewType>(10, 6, 1);
+  CheckCast<StringViewType, StringType>(10, 6, 1);
+  CheckFixedSize();*/
+  TestLargeString();
 }
 
 TEST(Cast, BinaryToString) {
