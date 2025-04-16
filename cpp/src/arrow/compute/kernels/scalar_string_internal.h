@@ -21,6 +21,7 @@
 
 #include "arrow/compute/api_scalar.h"
 #include "arrow/compute/kernels/common_internal.h"
+#include "arrow/util/logger.h"
 
 namespace arrow {
 namespace compute {
@@ -240,6 +241,8 @@ void AddUnaryStringPredicate(std::string name, FunctionRegistry* registry,
     auto exec = GenerateVarBinaryToVarBinary<StringPredicateFunctor, Predicate>(ty);
     ARROW_DCHECK_OK(func->AddKernel({ty}, boolean(), std::move(exec)));
   }
+  auto exec = GenerateBinaryViewToBinaryView<StringPredicateFunctor, Predicate>(utf8_view());
+  ARROW_DCHECK_OK(func->AddKernel({utf8_view()}, boolean(), std::move(exec)));
   ARROW_DCHECK_OK(registry->AddFunction(std::move(func)));
 }
 

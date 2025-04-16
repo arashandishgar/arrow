@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <arrow/util/logger.h>
+
 #include <algorithm>
 #include <cctype>
 #include <iterator>
@@ -478,7 +480,7 @@ Status StringDataTransform(KernelContext* ctx, const ExecSpan& batch,
     }
     *out_offsets = offsets[input.length] - first_offset;
   }
-
+  ARROW_LOGGER_INFO("",out_arr->buffers.size());
   int64_t data_nbytes = GetVarBinaryValuesLength<offset_type>(input);
   if (input.length > 0) {
     // Allocate space for output data
@@ -494,6 +496,26 @@ Status StringDataTransform(KernelContext* ctx, const ExecSpan& batch,
   return Status::OK();
 }
 
+/*template <typename Type>
+enable_if_binary_like<Type, Status> StringDataTransform(KernelContext* ctx,
+                                                        const ExecSpan& batch,
+                                                        TransformFunc transform,
+                                                        ExecResult* out) {
+  using ctype = BinaryViewType::c_type;
+
+  ArraySpan input = batch[0].array;
+  ArrayData* out_arr = out->array_data().get();
+  int view_buffer_nbytes = batch.length*sizeof(ctype);
+  ARROW_ASSIGN_OR_RAISE(out_arr->buffers[1] , ctx->Allocate(view_buffer_nbytes));
+  if (input.offset == 0) {
+    //It is clear how many buffers are needed for non-inline string
+
+  }else {
+    // Should be computed
+  }
+
+  return Status::OK();
+}*/
 // ----------------------------------------------------------------------
 // Predicates and classification
 
@@ -2244,7 +2266,7 @@ Result<TypeHolder> ResolveExtractRegexOutput(KernelContext* ctx,
     // No input type specified
     return nullptr;
   }
-  DCHECK(is_base_binary_like(input_type->id()));
+  DCHECK(is_base_binary_like(input_type->id()) || is_binary_view_like(input_type->id()));
   auto is_utf8 = is_string(input_type->id());
   ExtractRegexOptions options = ExtractRegexState::Get(ctx);
   ARROW_ASSIGN_OR_RAISE(auto data, ExtractRegexData::Make(options, is_utf8));
@@ -2355,6 +2377,16 @@ void AddAsciiStringExtractRegex(FunctionRegistry* registry) {
     kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
     DCHECK_OK(func->AddKernel(kernel));
   }
+  for (const auto& in_ty : BinaryViewTypes()) {
+    ScalarKernel kernel{{in_ty},
+                        out_ty,
+                        GenerateBinaryViewToBinaryView<ExtractRegex>(in_ty),
+                        ExtractRegexState::Init};
+    // Null values will be computed based on regex match or not
+    kernel.null_handling = NullHandling::COMPUTED_NO_PREALLOCATE;
+    kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
+    DCHECK_OK(func->AddKernel(kernel));
+  }
   DCHECK_OK(registry->AddFunction(std::move(func)));
 }
 
@@ -2369,7 +2401,10 @@ struct ExtractRegexSpanData : public BaseExtractRegexData {
     const DataType* input_type = types[0].type;
     FieldVector fields;
     fields.reserve(num_groups());
-    auto index_type = is_binary_like(input_type->id()) ? int32() : int64();
+    auto index_type =
+        (is_binary_like(input_type->id()) || is_binary_view_like(input_type->id()))
+            ? int32()
+            : int64();
     for (const auto& group_name : group_names) {
       // list size is 2 as every span contains position and length
       fields.push_back(field(group_name, fixed_size_list(index_type, 2)));
@@ -2474,7 +2509,7 @@ Result<TypeHolder> ResolveExtractRegexSpanOutputType(
     // No input type specified
     return nullptr;
   }
-  DCHECK(is_base_binary_like(input_type->id()));
+  DCHECK(is_base_binary_like(input_type->id()) || is_binary_view_like(input_type->id()));
   auto is_utf8 = is_string(input_type->id());
   auto options = OptionsWrapper<ExtractRegexSpanOptions>::Get(*ctx->state());
 
@@ -2489,6 +2524,14 @@ void AddAsciiStringExtractRegexSpan(FunctionRegistry* registry) {
   for (const auto& type : BaseBinaryTypes()) {
     ScalarKernel kernel({type}, output_type,
                         GenerateVarBinaryToVarBinary<ExtractRegexSpan>(type),
+                        OptionsWrapper<ExtractRegexSpanOptions>::Init);
+    kernel.null_handling = NullHandling::COMPUTED_NO_PREALLOCATE;
+    kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
+    DCHECK_OK(func->AddKernel(std::move(kernel)));
+  }
+  for (const auto& type : BinaryViewTypes()) {
+    ScalarKernel kernel({type}, output_type,
+                        GenerateBinaryViewToBinaryView<ExtractRegexSpan>(type),
                         OptionsWrapper<ExtractRegexSpanOptions>::Init);
     kernel.null_handling = NullHandling::COMPUTED_NO_PREALLOCATE;
     kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;

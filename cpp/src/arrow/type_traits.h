@@ -367,6 +367,7 @@ struct TypeTraits<BinaryViewType> {
   using ArrayType = BinaryViewArray;
   using BuilderType = BinaryViewBuilder;
   using ScalarType = BinaryViewScalar;
+  using OffsetType = Int32Type;
   using CType = BinaryViewType::c_type;
   constexpr static bool is_parameter_free = true;
   static inline std::shared_ptr<DataType> type_singleton() { return binary_view(); }
@@ -407,6 +408,7 @@ struct TypeTraits<StringViewType> {
   using ArrayType = StringViewArray;
   using BuilderType = StringViewBuilder;
   using ScalarType = StringViewScalar;
+  using OffsetType = Int32Type;
   using CType = BinaryViewType::c_type;
   constexpr static bool is_parameter_free = true;
   static inline std::shared_ptr<DataType> type_singleton() { return utf8_view(); }

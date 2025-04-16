@@ -357,6 +357,9 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
         // for null value, no need to update data buffer
         offset_builder.UnsafeAppend(static_cast<offset_type>(data_builder.length()));
       });
+  ARROW_LOGGER_INFO("",input.offset);
+  ARROW_LOGGER_INFO("",output->length);
+  ARROW_LOGGER_INFO("",offset_builder.length());
   RETURN_NOT_OK(offset_builder.Finish(&output->buffers[1]));
   RETURN_NOT_OK(data_builder.Finish(&output->buffers[2]));
   return Status::OK();
@@ -378,7 +381,7 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
       RETURN_NOT_OK(visitor.Visit(input, &validator));
     }
   }
-
+  ARROW_LOGGER_INFO("",out->array_data()->offset);;
   // Start with a zero-copy cast, then reconfigure the view and data buffers
   RETURN_NOT_OK(ZeroCopyCastExec(ctx, batch, out));
   ArrayData* output = out->array_data().get();
@@ -414,12 +417,14 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
 
   // If all entries are inline, we can drop the extra data buffer for
   // large strings in output->buffers[2].
+  ARROW_LOGGER_INFO("",output->offset);
   bool all_entries_are_inline = true;
   VisitSetBitRunsVoid(
       validity, output->offset, output->length,
       [&](int64_t start_offset, int64_t run_length) {
         for (int64_t i = start_offset; i < start_offset + run_length; i++) {
           const offset_type data_offset = input_offsets[i];
+          ARROW_LOGGER_INFO("",i);
           const offset_type data_length = input_offsets[i + 1] - data_offset;
           auto& out_view = out_views[i];
           if (data_length <= BinaryViewType::kInlineSize) {

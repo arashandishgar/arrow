@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <arrow/util/logger.h>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -123,6 +125,15 @@ template <typename TestType>
 class TestStringKernels : public BaseTestStringKernels<TestType> {};
 
 TYPED_TEST_SUITE(TestStringKernels, StringArrowTypes);
+
+template <typename TestType>
+class TestBinaryViewKernels : public BaseTestStringKernels<TestType> {};
+
+TYPED_TEST_SUITE(TestBinaryViewKernels, BinaryViewArrowTypes);
+
+class TestBinaryViewKernel : public BaseTestStringKernels<BinaryViewType> {};
+
+class TestStringViewKernel : public BaseTestStringKernels<StringViewType> {};
 
 TYPED_TEST(TestBaseBinaryKernels, BinaryLength) {
   this->CheckUnary("binary_length", R"(["aaa", null, "áéíóú", "", "b"])",
@@ -2640,4 +2651,50 @@ TEST(TestStringKernels, UnicodeLibraryAssumptions) {
 }
 #endif
 
+TEST(My, ExtractRegex) {
+  std::vector<std::shared_ptr<Buffer>> buffers(4);
+  buffers[0] = nullptr;
+  buffers[1] = std::shared_ptr<Buffer>(*AllocateBuffer(10 * 16));
+  buffers[2] = std::shared_ptr<Buffer>(*AllocateBuffer(13));
+  buffers[3] = std::shared_ptr<Buffer>(*AllocateBuffer(13));
+  memset(buffers[1]->mutable_data(), 0, 16 * 10);
+  memset(buffers[2]->mutable_data(), 'a', 13);
+  memset(buffers[3]->mutable_data(), 'b', 13);
+  BinaryViewType::c_type* view_buffer =
+      reinterpret_cast<BinaryViewType::c_type*>(buffers[1]->mutable_data());
+  for (int i = 0; i < 5; i++) {
+    auto& view = view_buffer[i];
+    view.inlined.size = 13;
+    auto s = std::string(4, 'a');
+    memcpy(view.ref.prefix.data(), s.data(), 4);
+  }
+  for (int i = 5; i < 10; i++) {
+    auto& view = view_buffer[i];
+    view.inlined.size = 13;
+    auto s = std::string(4, 'b');
+    memcpy(view.ref.prefix.data(), s.data(), 4);
+    view.ref.buffer_index = 1;
+  }
+  auto data = std::make_shared<ArrayData>(utf8_view(), 10, std::move(buffers));
+  StringViewArray sv(data);
+  for (int i = 0; i < 10; i++) {
+    ARROW_LOGGER_INFO("", sv.GetString(i));
+    ASSERT_EQ(sv.GetString(i).length(), 13);
+  }
+}
+TEST(My, FF) {
+  StringBuilder builder;
+  auto i =   std::string(1 << 16, 'h');
+  for (int i1=0;i1<8;i1++) {
+    ASSERT_OK(builder.Append(i.data(),1<<16));
+  }
+
+  CastOptions options;
+  options.to_type = utf8_view();
+  auto s = builder.Finish().ValueOrDie();
+
+  ARROW_LOGGER_INFO("", s->Slice(5,3)->data()->offset);
+  auto datum = CallFunction("cast", {s->Slice(5,3)}, &options);
+  ARROW_LOGGER_INFO("", datum.status());
+}
 }  // namespace arrow::compute

@@ -188,10 +188,12 @@ using AllBinaryOrBinrayViewLikeArrowTypes =
 
 using BinaryArrowTypes = ::testing::Types<BinaryType, LargeBinaryType>;
 
-using StringArrowTypes = ::testing::Types<StringType, LargeStringType>;
+using StringArrowTypes = ::testing::Types<StringType, LargeStringType,StringViewType>;
 
 using StringOrStringViewArrowTypes =
     ::testing::Types<StringType, LargeStringType, StringViewType>;
+
+using BinaryViewArrowTypes = ::testing::Types<BinaryViewType, StringViewType>;
 
 using ListArrowTypes = ::testing::Types<ListType, LargeListType>;
 

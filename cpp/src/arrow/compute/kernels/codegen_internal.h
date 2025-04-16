@@ -37,6 +37,7 @@
 #include "arrow/status.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
+#include "arrow/util/binary_view_util.h"
 #include "arrow/util/bit_block_counter.h"
 #include "arrow/util/bit_util.h"
 #include "arrow/util/bitmap_generate.h"
@@ -48,6 +49,8 @@
 #include "arrow/util/macros.h"
 #include "arrow/util/visibility.h"
 #include "arrow/visit_data_inline.h"
+
+#include <arrow/util/logger.h>
 
 namespace arrow {
 
@@ -338,6 +341,26 @@ struct ArrayIterator<FixedSizeBinaryType> {
   std::string_view operator()() {
     auto result = std::string_view(data + position * width, width);
     position++;
+    return result;
+  }
+};
+
+template <typename Type>
+struct ArrayIterator<Type, enable_if_binary_view_like<Type>> {
+  using view_type = typename TypeTraits<Type>::CType;
+  const view_type* view_buffer;
+  const std::shared_ptr<Buffer>* data_buffers;
+  int64_t position;
+
+  explicit ArrayIterator(const ArraySpan& arr)
+      // GetValues handle offset
+      : view_buffer(arr.GetValues<view_type>(1)),
+        data_buffers(arr.GetVariadicBuffers().data()),
+        position(0) {}
+
+  std::string_view operator()() {
+    auto result = util::FromBinaryView(view_buffer[position], data_buffers);
+    ++position;
     return result;
   }
 };
@@ -1338,6 +1361,20 @@ ArrayKernelExec GenerateVarBinaryViewBase(detail::GetTypeId get_id) {
       return nullptr;
   }
 }
+
+template <template <typename...> class Generator, typename... Args>
+ArrayKernelExec GenerateBinaryViewToBinaryView(detail::GetTypeId get_id) {
+  switch (get_id.id) {
+    case Type::BINARY_VIEW:
+      return Generator<BinaryViewType, Args...>::Exec;
+    case Type::STRING_VIEW:
+      return Generator<StringViewType, Args...>::Exec;
+    default:
+      ARROW_DCHECK(false);
+      return nullptr;
+  }
+}
+
 
 // Generate a kernel given a templated functor for temporal types
 //

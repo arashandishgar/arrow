@@ -783,6 +783,7 @@ class ARROW_EXPORT BinaryType : public BaseBinaryType {
 class ARROW_EXPORT BinaryViewType : public DataType {
  public:
   static constexpr Type::type type_id = Type::BINARY_VIEW;
+  using offset_type = int32_t;
   static constexpr bool is_utf8 = false;
   using PhysicalType = BinaryViewType;
 
@@ -931,6 +932,7 @@ class ARROW_EXPORT StringViewType : public BinaryViewType {
  public:
   static constexpr Type::type type_id = Type::STRING_VIEW;
   static constexpr bool is_utf8 = true;
+  using offset_type = int32_t;
   using PhysicalType = BinaryViewType;
 
   static constexpr const char* type_name() { return "utf8_view"; }
