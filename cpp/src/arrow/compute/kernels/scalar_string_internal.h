@@ -157,6 +157,8 @@ void MakeUnaryStringBatchKernel(
     kernel.mem_allocation = mem_allocation;
     ARROW_DCHECK_OK(func->AddKernel(std::move(kernel)));
   }
+  auto exec = GenerateBinaryViewToBinaryView<ExecFunctor>(utf8_view());
+  ARROW_DCHECK_OK(func->AddKernel({utf8_view()}, utf8_view(), std::move(exec)));
   ARROW_DCHECK_OK(registry->AddFunction(std::move(func)));
 }
 

@@ -27,6 +27,7 @@
 #include "arrow/array/builder_primitive.h"
 #include "arrow/compute/kernels/scalar_string_internal.h"
 #include "arrow/result.h"
+#include "arrow/util/binary_view_util.h"
 #include "arrow/util/config.h"
 #include "arrow/util/logging_internal.h"
 #include "arrow/util/macros.h"
@@ -451,8 +452,8 @@ using TransformFunc = std::function<void(const uint8_t*, int64_t, uint8_t*)>;
 // Apply `transform` to input character data- this function cannot change the
 // length
 template <typename Type>
-Status StringDataTransform(KernelContext* ctx, const ExecSpan& batch,
-                           TransformFunc transform, ExecResult* out) {
+enable_if_t<is_base_binary_type<Type>::value, Status> StringDataTransform(
+    KernelContext* ctx, const ExecSpan& batch, TransformFunc transform, ExecResult* out) {
   using offset_type = typename Type::offset_type;
 
   const ArraySpan& input = batch[0].array;
@@ -480,7 +481,7 @@ Status StringDataTransform(KernelContext* ctx, const ExecSpan& batch,
     }
     *out_offsets = offsets[input.length] - first_offset;
   }
-  ARROW_LOGGER_INFO("",out_arr->buffers.size());
+  ARROW_LOGGER_INFO("", out_arr->buffers.size());
   int64_t data_nbytes = GetVarBinaryValuesLength<offset_type>(input);
   if (input.length > 0) {
     // Allocate space for output data
@@ -496,26 +497,53 @@ Status StringDataTransform(KernelContext* ctx, const ExecSpan& batch,
   return Status::OK();
 }
 
-/*template <typename Type>
-enable_if_binary_like<Type, Status> StringDataTransform(KernelContext* ctx,
-                                                        const ExecSpan& batch,
-                                                        TransformFunc transform,
-                                                        ExecResult* out) {
-  using ctype = BinaryViewType::c_type;
+template <typename Type>
+enable_if_t<is_binary_view_like_type<Type>::value, Status> StringDataTransform(
+    KernelContext* ctx, const ExecSpan& batch, TransformFunc transform, ExecResult* out) {
+  using view_type = BinaryViewArray::c_type;
 
   ArraySpan input = batch[0].array;
+  auto in_view_buffer = input.GetBuffer(1);
   ArrayData* out_arr = out->array_data().get();
-  int view_buffer_nbytes = batch.length*sizeof(ctype);
-  ARROW_ASSIGN_OR_RAISE(out_arr->buffers[1] , ctx->Allocate(view_buffer_nbytes));
-  if (input.offset == 0) {
-    //It is clear how many buffers are needed for non-inline string
+  auto input_data_buffers = input.GetVariadicBuffers();
 
-  }else {
-    // Should be computed
+  if (!input_data_buffers.empty()) {
+    out_arr->buffers.resize(input_data_buffers.size() + 2);
   }
 
+  ARROW_ASSIGN_OR_RAISE(
+      out_arr->buffers[1],
+      in_view_buffer->CopySlice(input.offset * sizeof(view_type),
+                                input.length * sizeof(view_type), ctx->memory_pool()));
+
+  for (size_t i = 0; i < input_data_buffers.size(); ++i) {
+    ARROW_ASSIGN_OR_RAISE(out_arr->buffers[i + 2],
+                          ctx->Allocate(input_data_buffers[i]->size()));
+  }
+
+  auto* out_views = out_arr->GetMutableValues<view_type>(1);
+  const auto* in_views = input.GetValues<view_type>(1);
+
+  VisitBitBlocksVoid(
+      input.buffers[0].data, input.offset, input.length,
+      [&](int64_t position) {
+        view_type& out_view = out_views[position];
+        const view_type& in_view = in_views[position];
+        auto input_data = util::FromBinaryView(in_view, input_data_buffers.data());
+        auto output_data = util::FromBinaryView(out_view, &out_arr->buffers[2]);
+
+        transform(reinterpret_cast<const unsigned char*>(input_data.data()),
+                  in_view.size(),
+                  reinterpret_cast<uint8_t*>(const_cast<char*>(output_data.data())));
+        if (!out_view.is_inline()) {
+          memcpy(out_view.ref.prefix.data(), in_view.ref.prefix.data(),
+                 BinaryViewType::kPrefixSize);
+        }
+      },
+      []() {});
+
   return Status::OK();
-}*/
+}
 // ----------------------------------------------------------------------
 // Predicates and classification
 

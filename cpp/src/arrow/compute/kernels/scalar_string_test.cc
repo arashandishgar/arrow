@@ -2683,18 +2683,8 @@ TEST(My, ExtractRegex) {
   }
 }
 TEST(My, FF) {
-  StringBuilder builder;
-  auto i =   std::string(1 << 16, 'h');
-  for (int i1=0;i1<8;i1++) {
-    ASSERT_OK(builder.Append(i.data(),1<<16));
-  }
-
-  CastOptions options;
-  options.to_type = utf8_view();
-  auto s = builder.Finish().ValueOrDie();
-
-  ARROW_LOGGER_INFO("", s->Slice(5,3)->data()->offset);
-  auto datum = CallFunction("cast", {s->Slice(5,3)}, &options);
-  ARROW_LOGGER_INFO("", datum.status());
+  CheckScalarUnary("ascii_upper", utf8_view(), "[]", utf8_view(), "[]");
+  CheckScalarUnary("ascii_upper", utf8_view(), "[\"aAazZæÆ&\", null, \"\", \"bbb\"]",
+                   utf8_view(), "[\"AAAZZæÆ&\", null, \"\", \"BBB\"]");
 }
 }  // namespace arrow::compute
