@@ -69,8 +69,11 @@ static int64_t GetVarBinaryValuesLength(const ArraySpan& span) {
 ///
 /// and returns the number of codeunits of the `output` sequence or a negative
 /// value if an invalid input sequence is detected.
+template <typename Type, typename StringTransform, typename = void>
+struct StringTransformExecBase;
+
 template <typename Type, typename StringTransform>
-struct StringTransformExecBase {
+struct StringTransformExecBase<Type, StringTransform, enable_if_base_binary<Type>> {
   using offset_type = typename Type::offset_type;
   using ArrayType = typename TypeTraits<Type>::ArrayType;
 
@@ -123,6 +126,26 @@ struct StringTransformExecBase {
 };
 
 template <typename Type, typename StringTransform>
+struct StringTransformExecBase<Type, StringTransform, enable_if_binary_view_like<Type>> {
+  using offset_type = typename Type::offset_type;
+  using ArrayType = typename TypeTraits<Type>::ArrayType;
+
+  static Status Execute(KernelContext* ctx, StringTransform* transform,
+                        const ExecSpan& batch, ExecResult* out) {
+
+    return Status::OK();
+  }
+
+  static Status CheckOutputCapacity(int64_t ncodeunits) {
+    if (ncodeunits > std::numeric_limits<offset_type>::max()) {
+      return Status::CapacityError(
+          "Result might not fit in a 32bit utf8 array, convert to large_utf8");
+    }
+    return Status::OK();
+  }
+};
+
+template <typename Type, typename StringTransform>
 struct StringTransformExec : public StringTransformExecBase<Type, StringTransform> {
   using StringTransformExecBase<Type, StringTransform>::Execute;
 
@@ -158,7 +181,9 @@ void MakeUnaryStringBatchKernel(
     ARROW_DCHECK_OK(func->AddKernel(std::move(kernel)));
   }
   auto exec = GenerateBinaryViewToBinaryView<ExecFunctor>(utf8_view());
-  ARROW_DCHECK_OK(func->AddKernel({utf8_view()}, utf8_view(), std::move(exec)));
+  ScalarKernel kernel{{utf8_view()}, utf8_view(), std::move(exec)};
+  kernel.mem_allocation = mem_allocation;
+  ARROW_DCHECK_OK(func->AddKernel(std::move(kernel)));
   ARROW_DCHECK_OK(registry->AddFunction(std::move(func)));
 }
 
@@ -243,7 +268,8 @@ void AddUnaryStringPredicate(std::string name, FunctionRegistry* registry,
     auto exec = GenerateVarBinaryToVarBinary<StringPredicateFunctor, Predicate>(ty);
     ARROW_DCHECK_OK(func->AddKernel({ty}, boolean(), std::move(exec)));
   }
-  auto exec = GenerateBinaryViewToBinaryView<StringPredicateFunctor, Predicate>(utf8_view());
+  auto exec =
+      GenerateBinaryViewToBinaryView<StringPredicateFunctor, Predicate>(utf8_view());
   ARROW_DCHECK_OK(func->AddKernel({utf8_view()}, boolean(), std::move(exec)));
   ARROW_DCHECK_OK(registry->AddFunction(std::move(func)));
 }
