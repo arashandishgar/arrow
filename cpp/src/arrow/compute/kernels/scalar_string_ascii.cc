@@ -481,7 +481,6 @@ enable_if_t<is_base_binary_type<Type>::value, Status> StringDataTransform(
     }
     *out_offsets = offsets[input.length] - first_offset;
   }
-  ARROW_LOGGER_INFO("", out_arr->buffers.size());
   int64_t data_nbytes = GetVarBinaryValuesLength<offset_type>(input);
   if (input.length > 0) {
     // Allocate space for output data
@@ -536,7 +535,7 @@ enable_if_t<is_binary_view_like_type<Type>::value, Status> StringDataTransform(
                   in_view.size(),
                   reinterpret_cast<uint8_t*>(const_cast<char*>(output_data.data())));
         if (!out_view.is_inline()) {
-          memcpy(out_view.ref.prefix.data(), in_view.ref.prefix.data(),
+          memcpy(out_view.ref.prefix.data(), output_data.data(),
                  BinaryViewType::kPrefixSize);
         }
       },
