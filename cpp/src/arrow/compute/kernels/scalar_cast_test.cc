@@ -3332,10 +3332,10 @@ void TestLargeString() {
 
 }
 TEST(MY, CastStringToStringView) {
-  /*CheckCast<StringType, StringViewType>(10, 6, 1);
   CheckCast<StringViewType, StringType>(10, 6, 1);
-  CheckFixedSize();*/
-  TestLargeString();
+  /*CheckCast<StringType, StringViewType>(10, 6, 1);
+  CheckFixedSize();
+  TestLargeString();*/
 }
 
 TEST(Cast, BinaryToString) {

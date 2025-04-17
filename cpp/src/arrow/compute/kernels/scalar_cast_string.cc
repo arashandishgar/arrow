@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <arrow/util/logger.h>
+
 #include <limits>
 #include <optional>
 
@@ -316,7 +318,6 @@ enable_if_t<is_binary_view_like_type<I>::value && is_base_binary_type<O>::value,
 BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
   using offset_type = typename O::offset_type;
   using DataBuilder = TypedBufferBuilder<uint8_t>;
-  using OffsetBuilder = TypedBufferBuilder<offset_type>;
   const CastOptions& options = checked_cast<const CastState&>(*ctx->state()).options;
   const ArraySpan& input = batch[0].array;
 
@@ -348,24 +349,26 @@ BinaryToBinaryCastExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* ou
                         GetOrCopyNullBitmapBuffer(input, ctx->memory_pool()));
 
   // Set up offset and data buffer
-  OffsetBuilder offset_builder(ctx->memory_pool());
-  RETURN_NOT_OK(offset_builder.Reserve(input.length + 1));
-  offset_builder.UnsafeAppend(0);  // offsets start at 0
+
+  auto* offset_buffer = output->GetMutableValues<offset_type>(1);
+  offset_buffer[0] = 0;  // offsets start at 0
   DataBuilder data_builder(ctx->memory_pool());
   RETURN_NOT_OK(data_builder.Reserve(sum_of_binary_view_sizes));
+  int64_t index = 1;
   VisitArraySpanInline<I>(
       input,
       [&](std::string_view s) {
         // for non-null value, append string view to buffer and calculate offset
         data_builder.UnsafeAppend(reinterpret_cast<const uint8_t*>(s.data()),
                                   static_cast<int64_t>(s.size()));
-        offset_builder.UnsafeAppend(static_cast<offset_type>(data_builder.length()));
+        offset_buffer[index] = static_cast<offset_type>(data_builder.length());
+        ++index;
       },
       [&]() {
         // for null value, no need to update data buffer
-        offset_builder.UnsafeAppend(static_cast<offset_type>(data_builder.length()));
+        offset_buffer[index] = static_cast<offset_type>(data_builder.length());
+        ++index;
       });
-  RETURN_NOT_OK(offset_builder.Finish(&output->buffers[1]));
   RETURN_NOT_OK(data_builder.Finish(&output->buffers[2]));
   return Status::OK();
 }
