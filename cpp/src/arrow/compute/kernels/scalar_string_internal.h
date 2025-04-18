@@ -23,6 +23,8 @@
 #include "arrow/compute/kernels/common_internal.h"
 #include "arrow/util/logger.h"
 
+#include <arrow/util/bitmap_visit.h>
+
 namespace arrow {
 namespace compute {
 namespace internal {
@@ -129,9 +131,27 @@ template <typename Type, typename StringTransform>
 struct StringTransformExecBase<Type, StringTransform, enable_if_binary_view_like<Type>> {
   using offset_type = typename Type::offset_type;
   using ArrayType = typename TypeTraits<Type>::ArrayType;
+  using ViewType = typename TypeTraits<Type>::CType;
 
   static Status Execute(KernelContext* ctx, StringTransform* transform,
                         const ExecSpan& batch, ExecResult* out) {
+    const ArraySpan& input = batch[0].array;
+    const ViewType* input_view_buffer = input.GetValues<ViewType>(1);
+    auto buffers = input.GetVariadicBuffers();
+    arrow::internal::StringHeapBuilder string_heap_builder(ctx->memory_pool(),
+                                               kDefaultBufferAlignment);
+    TypedBufferBuilder<ViewType> typed_buffer_builder(ctx->memory_pool());
+    // Should We Assume Reserve  initialize  the buffers with Zero value? It is necessary
+    // for matching with Arrow Specification
+    ARROW_RETURN_NOT_OK(typed_buffer_builder.Reserve(batch.length));
+    for (int64_t i = 0; i < input.length; ++i) {
+      const ViewType& in_view = input_view_buffer[i];
+      auto in_data = util::FromBinaryView(in_view, buffers.data());
+      int64_t max_output_ncodeunits = transform->MaxCodeunits(1, in_data.size());
+      RETURN_NOT_OK(CheckOutputCapacity(max_output_ncodeunits));
+      ARROW_RETURN_NOT_OK(string_heap_builder.Reserve(max_output_ncodeunits));
+      string_heap_builder.
+    }
 
     return Status::OK();
   }
@@ -139,7 +159,7 @@ struct StringTransformExecBase<Type, StringTransform, enable_if_binary_view_like
   static Status CheckOutputCapacity(int64_t ncodeunits) {
     if (ncodeunits > std::numeric_limits<offset_type>::max()) {
       return Status::CapacityError(
-          "Result might not fit in a 32bit utf8 array, convert to large_utf8");
+          "Result might not fit in a 32bit utf8_view array");
     }
     return Status::OK();
   }
