@@ -2994,11 +2994,6 @@ void AddAsciiStringSplitPattern(FunctionRegistry* registry) {
     DCHECK_OK(
         func->AddKernel({ty}, {list(ty)}, std::move(exec), SplitPatternState::Init));
   }
-  for (const auto& ty : BinaryViewTypes()) {
-    auto exec = GenerateBinaryViewToBinaryView<SplitPatternExec, ListType>(ty);
-    DCHECK_OK(
-        func->AddKernel({ty}, {list(ty)}, std::move(exec), SplitPatternState::Init));
-  }
   DCHECK_OK(registry->AddFunction(std::move(func)));
 }
 
