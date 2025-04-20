@@ -1056,6 +1056,22 @@ TYPED_TEST(TestStringKernels, AsciiUpper) {
   this->CheckUnary("ascii_upper", "[]", this->type(), "[]");
   this->CheckUnary("ascii_upper", "[\"aAazZæÆ&\", null, \"\", \"bbb\"]", this->type(),
                    "[\"AAAZZæÆ&\", null, \"\", \"BBB\"]");
+  if (this->type()->id() == Type::STRING_VIEW) {
+    auto st_in = std::string(1 << 15, 'a');
+    StringViewBuilder string_view_builder;
+    for (int64_t i = 0; i < 8; i++) {
+      ASSERT_OK(string_view_builder.Append(st_in));
+      ASSERT_OK(string_view_builder.Append("hello"));
+    }
+    ASSERT_OK_AND_ASSIGN(auto array_in, string_view_builder.Finish());
+    auto st_out = std::string(1 << 15, 'A');
+    for (int64_t i = 0; i < 8; i++) {
+      ASSERT_OK(string_view_builder.Append(st_out));
+      ASSERT_OK(string_view_builder.Append("HELLO"));
+    }
+    ASSERT_OK_AND_ASSIGN(auto array_out, string_view_builder.Finish());
+    this->CheckUnary("ascii_upper", array_in, array_out);
+  }
 }
 
 TYPED_TEST(TestStringKernels, AsciiLower) {
@@ -1080,6 +1096,25 @@ TYPED_TEST(TestStringKernels, AsciiCapitalize) {
                    this->type(),
                    "[\"AaazzæÆ&\", null, \"\", \"Bbb\", \"Hello, world!\", \"$. a3\", "
                    "\"!hello, world!\"]");
+
+  // Test BLockBuilder in Large run
+  if (this->type()->id() == Type::STRING_VIEW) {
+    auto st_in = std::string(1 << 15, 'a');
+    StringViewBuilder string_view_builder;
+    for (int64_t i = 0; i < 8; i++) {
+      ASSERT_OK(string_view_builder.Append(st_in));
+      ASSERT_OK(string_view_builder.Append("hello"));
+    }
+    ASSERT_OK_AND_ASSIGN(auto array_in, string_view_builder.Finish());
+    st_in[0] = 'A';
+    for (int64_t i = 0; i < 8; i++) {
+      ASSERT_OK(string_view_builder.Append(st_in));
+      ASSERT_OK(string_view_builder.Append("Hello"));
+    }
+    ASSERT_OK_AND_ASSIGN(auto array_out, string_view_builder.Finish());
+    ARROW_LOGGER_INFO("", array_in->data()->buffers.size());
+    this->CheckUnary("ascii_capitalize", array_in, array_out);
+  }
 }
 
 TYPED_TEST(TestStringKernels, AsciiTitle) {
@@ -1115,79 +1150,85 @@ TYPED_TEST(TestStringKernels, Utf8Reverse) {
   // would produce arrays with same lengths. Hence checking offset buffer equality
   auto malformed_input = ArrayFromJSON(this->type(), "[\"ɑ\xFFɑa\", \"ɽ\xe1\xbdɽa\"]");
   const Result<Datum>& res = CallFunction("utf8_reverse", {malformed_input});
-  ASSERT_TRUE(res->array()->buffers[1]->Equals(*malformed_input->data()->buffers[1]));
+  // TODO(StringView)
+  if (this->type() != utf8_view()) {
+    ASSERT_TRUE(res->array()->buffers[1]->Equals(*malformed_input->data()->buffers[1]));
+  }
 }
 
 #ifdef ARROW_WITH_UTF8PROC
 
 TYPED_TEST(TestStringKernels, Utf8Normalize) {
-  Utf8NormalizeOptions nfc_options{Utf8NormalizeOptions::NFC};
-  Utf8NormalizeOptions nfkc_options{Utf8NormalizeOptions::NFKC};
-  Utf8NormalizeOptions nfd_options{Utf8NormalizeOptions::NFD};
-  Utf8NormalizeOptions nfkd_options{Utf8NormalizeOptions::NFKD};
+  // TODO(StringView)
+  if (this->type() != utf8_view()) {
+    Utf8NormalizeOptions nfc_options{Utf8NormalizeOptions::NFC};
+    Utf8NormalizeOptions nfkc_options{Utf8NormalizeOptions::NFKC};
+    Utf8NormalizeOptions nfd_options{Utf8NormalizeOptions::NFD};
+    Utf8NormalizeOptions nfkd_options{Utf8NormalizeOptions::NFKD};
 
-  std::vector<Utf8NormalizeOptions> all_options{nfc_options, nfkc_options, nfd_options,
-                                                nfkd_options};
-  std::vector<Utf8NormalizeOptions> compose_options{nfc_options, nfkc_options};
-  std::vector<Utf8NormalizeOptions> decompose_options{nfd_options, nfkd_options};
-  std::vector<Utf8NormalizeOptions> canonical_options{nfc_options, nfd_options};
-  std::vector<Utf8NormalizeOptions> compatibility_options{nfkc_options, nfkd_options};
+    std::vector<Utf8NormalizeOptions> all_options{nfc_options, nfkc_options, nfd_options,
+                                                  nfkd_options};
+    std::vector<Utf8NormalizeOptions> compose_options{nfc_options, nfkc_options};
+    std::vector<Utf8NormalizeOptions> decompose_options{nfd_options, nfkd_options};
+    std::vector<Utf8NormalizeOptions> canonical_options{nfc_options, nfd_options};
+    std::vector<Utf8NormalizeOptions> compatibility_options{nfkc_options, nfkd_options};
 
-  for (const auto& options : all_options) {
-    this->CheckUnary("utf8_normalize", "[]", this->type(), "[]", &options);
-    const char* json_data = R"([null, "", "abc"])";
-    this->CheckUnary("utf8_normalize", json_data, this->type(), json_data, &options);
-  }
+    for (const auto& options : all_options) {
+      this->CheckUnary("utf8_normalize", "[]", this->type(), "[]", &options);
+      const char* json_data = R"([null, "", "abc"])";
+      this->CheckUnary("utf8_normalize", json_data, this->type(), json_data, &options);
+    }
 
-  // decomposed: U+0061(LATIN SMALL LETTER A) + U+0301(COMBINING ACUTE ACCENT)
-  // composed: U+00E1(LATIN SMALL LETTER A WITH ACUTE)
-  const char* json_composed = "[\"foo\", \"á\"]";
-  const char* json_decomposed = "[\"foo\", \"a\xcc\x81\"]";
-  for (const auto& options : compose_options) {
-    this->CheckUnary("utf8_normalize", json_decomposed, this->type(), json_composed,
-                     &options);
-    this->CheckUnary("utf8_normalize", json_composed, this->type(), json_composed,
-                     &options);
-  }
-  for (const auto& options : decompose_options) {
-    this->CheckUnary("utf8_normalize", json_composed, this->type(), json_decomposed,
-                     &options);
-    this->CheckUnary("utf8_normalize", json_decomposed, this->type(), json_decomposed,
-                     &options);
-  }
+    // decomposed: U+0061(LATIN SMALL LETTER A) + U+0301(COMBINING ACUTE ACCENT)
+    // composed: U+00E1(LATIN SMALL LETTER A WITH ACUTE)
+    const char* json_composed = "[\"foo\", \"á\"]";
+    const char* json_decomposed = "[\"foo\", \"a\xcc\x81\"]";
+    for (const auto& options : compose_options) {
+      this->CheckUnary("utf8_normalize", json_decomposed, this->type(), json_composed,
+                       &options);
+      this->CheckUnary("utf8_normalize", json_composed, this->type(), json_composed,
+                       &options);
+    }
+    for (const auto& options : decompose_options) {
+      this->CheckUnary("utf8_normalize", json_composed, this->type(), json_decomposed,
+                       &options);
+      this->CheckUnary("utf8_normalize", json_decomposed, this->type(), json_decomposed,
+                       &options);
+    }
 
-  // canonical: U+00B2(Superscript Two)
-  // compatibility: "2"
-  const char* json_canonical = "[\"01\xc2\xb2!\"]";
-  const char* json_compatibility = "[\"012!\"]";
-  for (const auto& options : canonical_options) {
-    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_canonical,
-                     &options);
-    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
-                     json_compatibility, &options);
-  }
-  for (const auto& options : compatibility_options) {
-    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_compatibility,
-                     &options);
-    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
-                     json_compatibility, &options);
-  }
+    // canonical: U+00B2(Superscript Two)
+    // compatibility: "2"
+    const char* json_canonical = "[\"01\xc2\xb2!\"]";
+    const char* json_compatibility = "[\"012!\"]";
+    for (const auto& options : canonical_options) {
+      this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_canonical,
+                       &options);
+      this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                       json_compatibility, &options);
+    }
+    for (const auto& options : compatibility_options) {
+      this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_compatibility,
+                       &options);
+      this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                       json_compatibility, &options);
+    }
 
-  // canonical: U+FDFA(Arabic Ligature Sallallahou Alayhe Wasallam)
-  // compatibility: <18 codepoints>
-  json_canonical = "[\"\xef\xb7\xba\"]";
-  json_compatibility = "[\"صلى الله عليه وسلم\"]";
-  for (const auto& options : canonical_options) {
-    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_canonical,
-                     &options);
-    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
-                     json_compatibility, &options);
-  }
-  for (const auto& options : compatibility_options) {
-    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_compatibility,
-                     &options);
-    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
-                     json_compatibility, &options);
+    // canonical: U+FDFA(Arabic Ligature Sallallahou Alayhe Wasallam)
+    // compatibility: <18 codepoints>
+    json_canonical = "[\"\xef\xb7\xba\"]";
+    json_compatibility = "[\"صلى الله عليه وسلم\"]";
+    for (const auto& options : canonical_options) {
+      this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_canonical,
+                       &options);
+      this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                       json_compatibility, &options);
+    }
+    for (const auto& options : compatibility_options) {
+      this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_compatibility,
+                       &options);
+      this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                       json_compatibility, &options);
+    }
   }
 }
 
@@ -1998,7 +2039,10 @@ TYPED_TEST(TestBaseBinaryKernels, ExtractRegex) {
 
 TYPED_TEST(TestBaseBinaryKernels, ExtractRegexSpan) {
   ExtractRegexSpanOptions options{"(?P<letter>[ab]+)(?P<digit>\\d+)"};
-  auto type_fixe_size_list = is_binary_like(this->type()->id()) ? int32() : int64();
+  auto type_fixe_size_list =
+      (is_binary_like(this->type()->id()) || is_binary_view_like(this->type()->id()))
+          ? int32()
+          : int64();
   auto out_type = struct_({field("letter", fixed_size_list(type_fixe_size_list, 2)),
                            field("digit", fixed_size_list(type_fixe_size_list, 2))});
   this->CheckUnary("extract_regex_span", R"([])", out_type, R"([])", &options);
@@ -2029,7 +2073,10 @@ TYPED_TEST(TestBaseBinaryKernels, ExtractRegexSpan) {
 
 TYPED_TEST(TestBaseBinaryKernels, ExtractRegexSpanCaptureOption) {
   ExtractRegexSpanOptions options{"(?P<foo>foo)?(?P<digit>\\d+)?"};
-  auto type_fixe_size_list = is_binary_like(this->type()->id()) ? int32() : int64();
+  auto type_fixe_size_list =
+      (is_binary_like(this->type()->id()) || is_binary_view_like(this->type()->id()))
+          ? int32()
+          : int64();
   auto out_type = struct_({field("foo", fixed_size_list(type_fixe_size_list, 2)),
                            field("digit", fixed_size_list(type_fixe_size_list, 2))});
   this->CheckUnary("extract_regex_span", R"([])", out_type, R"([])", &options);

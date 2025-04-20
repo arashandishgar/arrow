@@ -177,7 +177,7 @@ using DecimalArrowTypes =
     ::testing::Types</*Decimal32Type, Decimal64Type,*/ Decimal128Type, Decimal256Type>;
 
 using BaseBinaryArrowTypes =
-    ::testing::Types<BinaryType, LargeBinaryType, StringType, LargeStringType>;
+    ::testing::Types<BinaryType, LargeBinaryType, StringType, LargeStringType,BinaryViewType,StringViewType>;
 
 using BaseBinaryOrBinaryViewLikeArrowTypes =
     ::testing::Types<BinaryType, LargeBinaryType, BinaryViewType, StringType,
@@ -186,7 +186,7 @@ using AllBinaryOrBinrayViewLikeArrowTypes =
     ::testing::Types<BinaryType, LargeBinaryType, BinaryViewType, FixedSizeBinaryType,
                      StringType, LargeStringType, StringViewType>;
 
-using BinaryArrowTypes = ::testing::Types<BinaryType, LargeBinaryType>;
+using BinaryArrowTypes = ::testing::Types<BinaryType, LargeBinaryType,BinaryViewType>;
 
 using StringArrowTypes = ::testing::Types<StringType, LargeStringType,StringViewType>;
 

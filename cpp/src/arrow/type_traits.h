@@ -1553,6 +1553,8 @@ static inline int offset_bit_width(Type::type type_id) {
   switch (type_id) {
     case Type::STRING:
     case Type::BINARY:
+    case Type::STRING_VIEW:
+    case Type::BINARY_VIEW:
     case Type::LIST:
     case Type::LIST_VIEW:
     case Type::MAP:

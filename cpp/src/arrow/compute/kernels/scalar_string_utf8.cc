@@ -47,6 +47,8 @@ void MakeUnaryStringUTF8TransformKernel(std::string name, FunctionRegistry* regi
     auto exec = GenerateVarBinaryToVarBinary<Transformer>(ty);
     DCHECK_OK(func->AddKernel({ty}, ty, std::move(exec)));
   }
+  auto exec = GenerateBinaryViewToBinaryView<Transformer>(utf8_view());
+  DCHECK_OK(func->AddKernel({utf8_view()}, utf8_view(), std::move(exec)));
   DCHECK_OK(registry->AddFunction(std::move(func)));
 }
 

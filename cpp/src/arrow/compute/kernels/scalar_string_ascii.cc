@@ -940,6 +940,11 @@ void AddAsciiStringLength(FunctionRegistry* registry) {
             ty);
     DCHECK_OK(func->AddKernel({ty}, int64(), std::move(exec)));
   }
+  for (const auto& ty : {utf8_view(), binary_view()}) {
+    auto exec = GenerateVarBinaryViewBase<applicator::ScalarUnaryNotNull, Int32Type,
+                                          BinaryLength>(ty);
+    DCHECK_OK(func->AddKernel({ty}, int32(), std::move(exec)));
+  }
   DCHECK_OK(func->AddKernel({InputType(Type::FIXED_SIZE_BINARY)}, int32(),
                             BinaryLength::FixedSizeExec));
   DCHECK_OK(registry->AddFunction(std::move(func)));
@@ -1002,6 +1007,9 @@ void AddAsciiStringReverse(FunctionRegistry* registry) {
       DCHECK_OK(
           func->AddKernel({ty}, ty, GenerateVarBinaryToVarBinary<BinaryReverse>(ty)));
     }
+    DCHECK_OK(
+        func->AddKernel({binary_view()}, binary_view(),
+                        GenerateBinaryViewToBinaryView<BinaryReverse>(binary_view())));
     DCHECK_OK(registry->AddFunction(std::move(func)));
   }
   MakeUnaryStringBatchKernel<AsciiReverse>("ascii_reverse", registry, ascii_reverse_doc);
@@ -1825,6 +1833,12 @@ void AddAsciiStringFindSubstring(FunctionRegistry* registry) {
                                 GenerateVarBinaryToVarBinary<FindSubstringExec>(ty),
                                 MatchSubstringState::Init));
     }
+    for (const auto& ty : BinaryViewTypes()) {
+      const auto& offset_type = int32();
+      DCHECK_OK(func->AddKernel({ty}, offset_type,
+                                GenerateBinaryViewToBinaryView<FindSubstringExec>(ty),
+                                MatchSubstringState::Init));
+    }
     DCHECK_OK(func->AddKernel({InputType(Type::FIXED_SIZE_BINARY)}, int32(),
                               FindSubstringExec<FixedSizeBinaryType>::Exec,
                               MatchSubstringState::Init));
@@ -1839,6 +1853,12 @@ void AddAsciiStringFindSubstring(FunctionRegistry* registry) {
       DCHECK_OK(func->AddKernel({ty}, offset_type,
                                 GenerateVarBinaryToVarBinary<FindSubstringRegexExec>(ty),
                                 MatchSubstringState::Init));
+    }
+    for (const auto& ty : BinaryViewTypes()) {
+      const auto& offset_type = int32();
+      DCHECK_OK(func->AddKernel(
+          {ty}, offset_type, GenerateBinaryViewToBinaryView<FindSubstringRegexExec>(ty),
+          MatchSubstringState::Init));
     }
     DCHECK_OK(func->AddKernel({InputType(Type::FIXED_SIZE_BINARY)}, int32(),
                               FindSubstringRegexExec<FixedSizeBinaryType>::Exec,
@@ -1974,6 +1994,12 @@ void AddAsciiStringCountSubstring(FunctionRegistry* registry) {
                                 GenerateVarBinaryToVarBinary<CountSubstringExec>(ty),
                                 MatchSubstringState::Init));
     }
+    for (const auto& ty : BinaryViewTypes()) {
+      const auto& offset_type = int32();
+      DCHECK_OK(func->AddKernel({ty}, offset_type,
+                                GenerateBinaryViewToBinaryView<CountSubstringExec>(ty),
+                                MatchSubstringState::Init));
+    }
     DCHECK_OK(func->AddKernel({InputType(Type::FIXED_SIZE_BINARY)}, int32(),
                               CountSubstringExec<FixedSizeBinaryType>::Exec,
                               MatchSubstringState::Init));
@@ -1987,6 +2013,12 @@ void AddAsciiStringCountSubstring(FunctionRegistry* registry) {
       auto offset_type = offset_bit_width(ty->id()) == 64 ? int64() : int32();
       DCHECK_OK(func->AddKernel({ty}, offset_type,
                                 GenerateVarBinaryToVarBinary<CountSubstringRegexExec>(ty),
+                                MatchSubstringState::Init));
+    }
+    for (const auto& ty : BinaryViewTypes()) {
+      const auto& offset_type = int32();
+      DCHECK_OK(func->AddKernel({ty}, offset_type,
+                                GenerateBinaryViewToBinaryView<CountSubstringRegexExec>(ty),
                                 MatchSubstringState::Init));
     }
     DCHECK_OK(func->AddKernel({InputType(Type::FIXED_SIZE_BINARY)}, int32(),
@@ -2647,6 +2679,11 @@ void AddAsciiStringReplaceSlice(FunctionRegistry* registry) {
                               GenerateTypeAgnosticVarBinaryBase<BinaryReplaceSlice>(ty),
                               ReplaceStringSliceTransformBase::State::Init));
   }
+  for (const auto& ty : BinaryViewTypes()) {
+    DCHECK_OK(func->AddKernel({ty}, ty,
+                              GenerateTypeAgnosticBinaryView<BinaryReplaceSlice>(ty),
+                              ReplaceStringSliceTransformBase::State::Init));
+  }
   using TransformExec =
       FixedSizeBinaryTransformExecWithState<BinaryReplaceSliceTransform>;
   ScalarKernel fsb_kernel({InputType(Type::FIXED_SIZE_BINARY)},
@@ -2865,6 +2902,11 @@ void AddAsciiStringSlice(FunctionRegistry* registry) {
     DCHECK_OK(
         func->AddKernel({ty}, ty, std::move(exec), SliceBytesTransform::State::Init));
   }
+  for (const auto& ty : BinaryViewTypes()) {
+    auto exec = GenerateBinaryViewToBinaryView<SliceBytes>(ty);
+    DCHECK_OK(
+        func->AddKernel({ty}, ty, std::move(exec), SliceBytesTransform::State::Init));
+  }
   using TransformExec = FixedSizeBinaryTransformExecWithState<SliceBytesTransform>;
   ScalarKernel fsb_kernel({InputType(Type::FIXED_SIZE_BINARY)},
                           OutputType(TransformExec::OutputType), TransformExec::Exec,
@@ -2949,6 +2991,11 @@ void AddAsciiStringSplitPattern(FunctionRegistry* registry) {
                                                split_pattern_doc);
   for (const auto& ty : BaseBinaryTypes()) {
     auto exec = GenerateVarBinaryToVarBinary<SplitPatternExec, ListType>(ty);
+    DCHECK_OK(
+        func->AddKernel({ty}, {list(ty)}, std::move(exec), SplitPatternState::Init));
+  }
+  for (const auto& ty : BinaryViewTypes()) {
+    auto exec = GenerateBinaryViewToBinaryView<SplitPatternExec, ListType>(ty);
     DCHECK_OK(
         func->AddKernel({ty}, {list(ty)}, std::move(exec), SplitPatternState::Init));
   }
@@ -3663,6 +3710,7 @@ void RegisterScalarStringAscii(FunctionRegistry* registry) {
   AddAsciiStringReverse(registry);
   AddAsciiStringTrim(registry);
   AddAsciiStringPad(registry);
+  //TODO(ARASH) Start from here.
   AddAsciiStringMatchSubstring(registry);
   AddAsciiStringFindSubstring(registry);
   AddAsciiStringCountSubstring(registry);

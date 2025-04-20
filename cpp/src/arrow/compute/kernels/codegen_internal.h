@@ -680,7 +680,7 @@ struct ScalarUnaryNotNullStateful {
   };
 
   template <typename Type>
-  struct ArrayExec<Type, enable_if_base_binary<Type>> {
+  struct ArrayExec<Type, has_string_view<Type>> {
     static Status Exec(const ThisType& functor, KernelContext* ctx, const ArraySpan& arg0,
                        ExecResult* out) {
       // NOTE: This code is not currently used by any kernels and has
@@ -1372,6 +1372,18 @@ ArrayKernelExec GenerateBinaryViewToBinaryView(detail::GetTypeId get_id) {
     default:
       ARROW_DCHECK(false);
       return nullptr;
+  }
+}
+template <template <typename...> class Generator, typename KernelType = ArrayKernelExec,
+          typename... Args>
+KernelType GenerateTypeAgnosticBinaryView (detail::GetTypeId get_id) {
+  switch (get_id.id) {
+    case Type::BINARY_VIEW:
+    case Type::STRING_VIEW:
+      return Generator<BinaryViewType, Args...>::Exec;
+    default:
+      ARROW_DCHECK(false);
+    return FailFunctor<KernelType>::Exec;
   }
 }
 

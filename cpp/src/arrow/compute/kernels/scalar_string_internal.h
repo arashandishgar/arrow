@@ -28,7 +28,73 @@
 namespace arrow {
 namespace compute {
 namespace internal {
+namespace detail {
+struct BlockBufferBuilder {
+  static constexpr int64_t kDefaultBlocksize = 32 << 10;  // 32KB
 
+  BlockBufferBuilder(MemoryPool* pool, int64_t alignment)
+      : alignment_(alignment), pool_(pool) {}
+
+  using c_type = BinaryViewType::c_type;
+
+  static constexpr int64_t ValueSizeLimit() {
+    return std::numeric_limits<int32_t>::max();
+  }
+
+  /// \brief Ensure that the indicated number of bytes can be appended via
+  /// UnsafeAppend operations without the need to allocate more memory
+  Status Reserve(int64_t num_bytes) {
+    if (ARROW_PREDICT_FALSE(num_bytes > ValueSizeLimit())) {
+      return Status::CapacityError(
+          "BinaryView or StringView elements cannot reference "
+          "strings larger than 2GB");
+    }
+    if (num_bytes > current_remaining_bytes_) {
+      ARROW_RETURN_NOT_OK(FinishLastBlock());
+      current_remaining_bytes_ = num_bytes > blocksize_ ? num_bytes : blocksize_;
+      ARROW_ASSIGN_OR_RAISE(
+          std::shared_ptr<ResizableBuffer> new_block,
+          AllocateResizableBuffer(current_remaining_bytes_, alignment_, pool_));
+      current_offset_ = 0;
+      current_out_buffer_ = new_block->mutable_data();
+      blocks_.emplace_back(std::move(new_block));
+    }
+    return Status::OK();
+  }
+
+
+  Result<std::vector<std::shared_ptr<ResizableBuffer>>> Finish() {
+    if (!blocks_.empty()) {
+      ARROW_RETURN_NOT_OK(FinishLastBlock());
+    }
+    current_offset_ = 0;
+    current_out_buffer_ = NULLPTR;
+    current_remaining_bytes_ = 0;
+    return std::move(blocks_);
+  }
+
+  int64_t blocksize_ = kDefaultBlocksize;
+  std::vector<std::shared_ptr<ResizableBuffer>> blocks_;
+
+  int32_t current_offset_ = 0;
+  uint8_t* current_out_buffer_ = NULLPTR;
+  int64_t current_remaining_bytes_ = 0;
+
+ private:
+  Status FinishLastBlock() {
+    if (current_remaining_bytes_ > 0) {
+      // Avoid leaking uninitialized bytes from the allocator
+      ARROW_RETURN_NOT_OK(
+          blocks_.back()->Resize(blocks_.back()->size() - current_remaining_bytes_,
+                                 /*shrink_to_fit=*/true));
+      blocks_.back()->ZeroPadding();
+    }
+    return Status::OK();
+  }
+  int64_t alignment_;
+  MemoryPool* pool_;
+};
+}  // namespace detail
 // ----------------------------------------------------------------------
 // String transformation base classes
 
@@ -137,29 +203,77 @@ struct StringTransformExecBase<Type, StringTransform, enable_if_binary_view_like
                         const ExecSpan& batch, ExecResult* out) {
     const ArraySpan& input = batch[0].array;
     const ViewType* input_view_buffer = input.GetValues<ViewType>(1);
-    auto buffers = input.GetVariadicBuffers();
-    arrow::internal::StringHeapBuilder string_heap_builder(ctx->memory_pool(),
-                                               kDefaultBufferAlignment);
+    auto input_data_buffers = input.GetVariadicBuffers();
+    detail::BlockBufferBuilder block_buffer_builder(ctx->memory_pool(),
+                                                    kDefaultBufferAlignment);
     TypedBufferBuilder<ViewType> typed_buffer_builder(ctx->memory_pool());
     // Should We Assume Reserve  initialize  the buffers with Zero value? It is necessary
     // for matching with Arrow Specification
-    ARROW_RETURN_NOT_OK(typed_buffer_builder.Reserve(batch.length));
+    ARROW_RETURN_NOT_OK(typed_buffer_builder.Reserve(input.length));
+    // The following rule can be replaced with VisitBitBlocks or
+    // VisitNullBitmapInlined I just use it raw loop as the BaseBinary Types
+    // implementation uses the same version too.
     for (int64_t i = 0; i < input.length; ++i) {
-      const ViewType& in_view = input_view_buffer[i];
-      auto in_data = util::FromBinaryView(in_view, buffers.data());
-      int64_t max_output_ncodeunits = transform->MaxCodeunits(1, in_data.size());
-      RETURN_NOT_OK(CheckOutputCapacity(max_output_ncodeunits));
-      ARROW_RETURN_NOT_OK(string_heap_builder.Reserve(max_output_ncodeunits));
-      string_heap_builder.
-    }
+      if (!input.IsNull(i)) {
+        const BinaryViewType::c_type& in_view = input_view_buffer[i];
+        const auto* in_data = reinterpret_cast<const uint8_t*>(
+            util::FromBinaryView(in_view, input_data_buffers.begin()).data());
+        const int64_t max_output_ncodeunits = transform->MaxCodeunits(1, in_view.size());
+        ARROW_RETURN_NOT_OK(CheckOutputCapacity(max_output_ncodeunits));
+        offset_type encoded_nbytes = 0;
+        if (max_output_ncodeunits <= BinaryViewType::kInlineSize) {
+          // inlined data
+          BinaryViewType::c_type output_view{0, {}};
+          auto output_str = const_cast<uint8_t*>(output_view.inline_data());
+          encoded_nbytes = static_cast<offset_type>(
+              transform->Transform(in_data, in_view.size(), output_str));
+          if (encoded_nbytes < 0) {
+            return transform->InvalidInputSequence();
+          }
+          output_view.ref.size = encoded_nbytes;
+          typed_buffer_builder.UnsafeAppend(&output_view, 1);
+        } else {
+          ARROW_RETURN_NOT_OK(block_buffer_builder.Reserve(max_output_ncodeunits));
+          auto out_str = block_buffer_builder.current_out_buffer_;
+          encoded_nbytes = static_cast<offset_type>(
+              transform->Transform(in_data, in_view.size(), out_str));
+          if (encoded_nbytes < 0) {
+            return transform->InvalidInputSequence();
+          } else if (encoded_nbytes <= BinaryViewType::kInlineSize) {
+            BinaryViewType::c_type output_view{0, {}};
+            output_view.inlined.size = static_cast<offset_type>(encoded_nbytes);
 
+            memcpy(&output_view.inlined.data, out_str, encoded_nbytes);
+            typed_buffer_builder.UnsafeAppend(&output_view, 1);
+          } else {
+            block_buffer_builder.current_out_buffer_ += encoded_nbytes;
+            block_buffer_builder.current_remaining_bytes_ -= encoded_nbytes;
+
+            BinaryViewType::c_type output_view{0, {}};
+            output_view.ref.size = encoded_nbytes;
+            memcpy(&output_view.ref.prefix, out_str, BinaryViewType::kInlineSize);
+            output_view.ref.buffer_index = block_buffer_builder.blocks_.size() - 1;
+            output_view.ref.offset = block_buffer_builder.current_offset_;
+            block_buffer_builder.current_offset_ += encoded_nbytes;
+            typed_buffer_builder.UnsafeAppend(&output_view, 1);
+          }
+        }
+      } else {
+        ViewType output_view{0, {}};
+        typed_buffer_builder.UnsafeAppend(&output_view, 1);
+      }
+    }
+    ARROW_ASSIGN_OR_RAISE(auto buffer_vector, block_buffer_builder.Finish());
+    ArrayData* out_array = out->array_data().get();
+    ARROW_ASSIGN_OR_RAISE(out_array->buffers[1], typed_buffer_builder.Finish());
+    out_array->buffers.resize(buffer_vector.size() + 2);
+    std::move(buffer_vector.begin(), buffer_vector.end(), out_array->buffers.begin() + 2);
     return Status::OK();
   }
 
   static Status CheckOutputCapacity(int64_t ncodeunits) {
     if (ncodeunits > std::numeric_limits<offset_type>::max()) {
-      return Status::CapacityError(
-          "Result might not fit in a 32bit utf8_view array");
+      return Status::CapacityError("Result might not fit in a 32bit utf8_view array");
     }
     return Status::OK();
   }
@@ -221,6 +335,12 @@ void MakeUnaryStringBatchKernelWithState(
   {
     using t64 = ExecFunctor<LargeStringType>;
     ScalarKernel kernel{{large_utf8()}, large_utf8(), t64::Exec, t64::State::Init};
+    kernel.mem_allocation = mem_allocation;
+    ARROW_DCHECK_OK(func->AddKernel(std::move(kernel)));
+  }
+  {
+    using tView = ExecFunctor<StringViewType>;
+    ScalarKernel kernel{{utf8_view()}, utf8_view(), tView::Exec, tView::State::Init};
     kernel.mem_allocation = mem_allocation;
     ARROW_DCHECK_OK(func->AddKernel(std::move(kernel)));
   }
