@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <arrow/util/logger.h>
 
 #include <algorithm>
 #include <cctype>
@@ -1261,21 +1260,37 @@ void AddAsciiStringPad(FunctionRegistry* registry) {
 // ----------------------------------------------------------------------
 // Exact pattern detection
 
-using StrToBoolTransformFunc =
+using StrToBoolTransformFuncForBaseBinary =
     std::function<void(const void*, const uint8_t*, int64_t, int64_t, uint8_t*)>;
+using StrToBoolTransformBinaryViewType =
+    std::function<void(const BinaryViewType::c_type*, const std::shared_ptr<Buffer>*,
+                       int64_t, int64_t, uint8_t*)>;
+using StrToBoolTransformBinary =
+    std::variant<StrToBoolTransformFuncForBaseBinary, StrToBoolTransformBinaryViewType>;
 
 // Apply `transform` to input character data- this function cannot change the
 // length
 template <typename Type>
 void StringBoolTransform(KernelContext* ctx, const ExecSpan& batch,
-                         StrToBoolTransformFunc transform, ExecResult* out) {
-  using offset_type = typename Type::offset_type;
+                         StrToBoolTransformBinary transform, ExecResult* out) {
   const ArraySpan& input = batch[0].array;
   ArraySpan* out_arr = out->array_span_mutable();
-  if (input.length > 0) {
-    transform(reinterpret_cast<const offset_type*>(input.buffers[1].data) + input.offset,
-              input.buffers[2].data, input.length, out_arr->offset,
-              out_arr->buffers[1].data);
+  if constexpr (is_base_binary_type<Type>::value) {
+    using offset_type = typename Type::offset_type;
+    if (input.length > 0) {
+      auto function = std::get<StrToBoolTransformFuncForBaseBinary>(transform);
+      function(reinterpret_cast<const offset_type*>(input.buffers[1].data) + input.offset,
+               input.buffers[2].data, input.length, out_arr->offset,
+               out_arr->buffers[1].data);
+    }
+  } else {
+    // Binary view Type
+    const BinaryViewType::c_type* view_buffer =
+        input.GetValues<BinaryViewType::c_type>(1);
+    const std::shared_ptr<Buffer>* data_buffer = input.GetVariadicBuffers().data();
+    auto function = std::get<StrToBoolTransformBinaryViewType>(transform);
+    function(view_buffer, data_buffer, input.length, out_arr->offset,
+             out_arr->buffers[1].data);
   }
 }
 
@@ -1393,9 +1408,17 @@ struct RegexSubstringMatcher {
   }
 };
 #endif
+template <typename Type, typename Matcher, typename Enable = void>
+struct MatchSubstringImpl {
+  static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out,
+                     const Matcher* matcher) {
+
+    return Status::Invalid("Invalid State ",typeid(Type).name());
+  }
+};
 
 template <typename Type, typename Matcher>
-struct MatchSubstringImpl {
+struct MatchSubstringImpl<Type, Matcher, enable_if_t<is_base_binary_type<Type>::value>> {
   using offset_type = typename Type::offset_type;
 
   static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out,
@@ -1410,6 +1433,31 @@ struct MatchSubstringImpl {
             const char* current_data = reinterpret_cast<const char*>(data + offsets[i]);
             int64_t current_length = offsets[i + 1] - offsets[i];
             if (matcher->Match(std::string_view(current_data, current_length))) {
+              bitmap_writer.Set();
+            }
+            bitmap_writer.Next();
+          }
+          bitmap_writer.Finish();
+        },
+        out);
+    return Status::OK();
+  }
+};
+template <typename Type, typename Matcher>
+struct MatchSubstringImpl<Type, Matcher, enable_if_t<is_binary_like_type<Type>::value>> {
+  using c_type = BinaryViewType::c_type;
+
+  static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out,
+                     const Matcher* matcher) {
+    StringBoolTransform<Type>(
+        ctx, batch,
+        [&matcher](const c_type* view_buffer, const std::shared_ptr<Buffer>* data_buffer,
+                   int64_t length, int64_t output_offset, uint8_t* output) {
+          FirstTimeBitmapWriter bitmap_writer(output, output_offset, length);
+          for (int64_t i = 0; i < length; ++i) {
+            const c_type& view = view_buffer[i];
+            auto data = util::FromBinaryView(view, output);
+            if (matcher->Match(data)) {
               bitmap_writer.Set();
             }
             bitmap_writer.Next();
@@ -2017,9 +2065,9 @@ void AddAsciiStringCountSubstring(FunctionRegistry* registry) {
     }
     for (const auto& ty : BinaryViewTypes()) {
       const auto& offset_type = int32();
-      DCHECK_OK(func->AddKernel({ty}, offset_type,
-                                GenerateBinaryViewToBinaryView<CountSubstringRegexExec>(ty),
-                                MatchSubstringState::Init));
+      DCHECK_OK(func->AddKernel(
+          {ty}, offset_type, GenerateBinaryViewToBinaryView<CountSubstringRegexExec>(ty),
+          MatchSubstringState::Init));
     }
     DCHECK_OK(func->AddKernel({InputType(Type::FIXED_SIZE_BINARY)}, int32(),
                               CountSubstringRegexExec<FixedSizeBinaryType>::Exec,
@@ -3705,7 +3753,7 @@ void RegisterScalarStringAscii(FunctionRegistry* registry) {
   AddAsciiStringReverse(registry);
   AddAsciiStringTrim(registry);
   AddAsciiStringPad(registry);
-  //TODO(ARASH) Start from here.
+  // TODO(ARASH) Start from here.
   AddAsciiStringMatchSubstring(registry);
   AddAsciiStringFindSubstring(registry);
   AddAsciiStringCountSubstring(registry);
