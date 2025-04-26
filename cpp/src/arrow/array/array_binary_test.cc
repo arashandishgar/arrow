@@ -374,7 +374,7 @@ using ArrayType = typename TypeTraits<Type>::ArrayType;
 
 // Produce an Array of index/offset views from a std::vector of index/offset
 // BinaryViewType::c_type
-template <typename Type>
+template <typename Type = StringViewType>
 Result<std::shared_ptr<ArrayType<Type>>> MakeBinaryViewArray(
     BufferVector data_buffers, const std::vector<BinaryViewType::c_type>& views,
     bool validate = true) {
@@ -387,12 +387,6 @@ Result<std::shared_ptr<ArrayType<Type>>> MakeBinaryViewArray(
     RETURN_NOT_OK(arr->ValidateFull());
   }
   return arr;
-}
-// For being compatible with Validate test case
-Result<std::shared_ptr<StringViewArray>> MakeBinaryViewArray(
-    BufferVector data_buffers, const std::vector<BinaryViewType::c_type>& views,
-    bool validate = true) {
-  return MakeBinaryViewArray<StringViewType>(std::move(data_buffers), views, validate);
 }
 
 TEST(StringViewArray, Validate) {
@@ -1027,12 +1021,12 @@ TYPED_TEST(TestBaseBinaryDataVisitor, Sliced) { this->TestSliced(); }
 
 template <typename Type>
 class TestCompactArray : public ::testing::Test {
-  using TypeArray = typename TypeTraits<Type>::ArrayType;
+  using ArrayType = typename TypeTraits<Type>::ArrayType;
 
  public:
   void SetUp() override { type_ = TypeTraits<Type>::type_singleton(); }
   void TestType() {
-    auto array = internal::checked_pointer_cast<TypeArray>(
+    auto array = internal::checked_pointer_cast<ArrayType>(
         ArrayFromJSON(type_, R"(["a","b","c"])"));
     ASSERT_OK_AND_ASSIGN(auto compacted_array, array->CompactArray());
     ASSERT_EQ(compacted_array->type(), type_);
@@ -1043,6 +1037,7 @@ class TestCompactArray : public ::testing::Test {
     ASSERT_OK_AND_ASSIGN(auto array, MakeBinaryViewArray<Type>({}, {}));
     ASSERT_OK_AND_ASSIGN(auto compacted_array, array->CompactArray());
     ASSERT_EQ(compacted_array->data()->buffers.size(), 2);
+    AssertArraysEqual(*array, *compacted_array);
 
     auto buffer_a = Buffer::FromString(std::string(1 << 5, 'a'));
     auto buffer_b = Buffer::FromString(std::string(1 << 5, 'b'));
@@ -1051,13 +1046,14 @@ class TestCompactArray : public ::testing::Test {
     ASSERT_OK_AND_ASSIGN(array, MakeBinaryViewArray<Type>({buffer_a, buffer_b}, {}));
     ASSERT_OK_AND_ASSIGN(compacted_array, array->CompactArray());
     ASSERT_EQ(compacted_array->data()->buffers.size(), 2);
+    AssertArraysEqual(*array, *compacted_array);
 
     // Check the state of no reference to data buffers from view elements
     ASSERT_OK_AND_ASSIGN(
         array, MakeBinaryViewArray<Type>({buffer_a, buffer_b},
                                          {
-                                             util::ToInlineBinaryView("no inlined 1"),
-                                             util::ToInlineBinaryView("no inlined 2"),
+                                             util::ToInlineBinaryView("inlined 1"),
+                                             util::ToInlineBinaryView("inlined 2"),
                                          }))
     ASSERT_OK_AND_ASSIGN(compacted_array, array->CompactArray());
     ASSERT_EQ(compacted_array->data()->buffers.size(), 2);
@@ -1066,37 +1062,36 @@ class TestCompactArray : public ::testing::Test {
     // Check the state of there is one reference to whole data of one data buffer
     ASSERT_OK_AND_ASSIGN(
         array,
-        MakeBinaryViewArray<Type>({buffer_a, buffer_b},
-                                  {
-                                      util::ToBinaryView("bbbb", buffer_b->size(), 1, 0),
-                                      util::ToInlineBinaryView("no inlined 1"),
-                                  }));
+        MakeBinaryViewArray<Type>(
+            {buffer_a, buffer_b},
+            {
+                util::ToBinaryView("bbbb", static_cast<int32_t>(buffer_b->size()), 1, 0),
+                util::ToInlineBinaryView("inlined 1"),
+            }));
     ASSERT_OK_AND_ASSIGN(compacted_array, array->CompactArray());
     ASSERT_EQ(compacted_array->data()->buffers.size(), 3);
     AssertArraysEqual(*array, *compacted_array);
 
     // Check the state of there is one reference to partial data of one data buffer
-    ASSERT_OK_AND_ASSIGN(array,
-                         MakeBinaryViewArray<Type>(
-                             {
-                                 buffer_a,
-                                 buffer_b,
-                             },
-                             {
-                                 util::ToBinaryView("bbbb", buffer_b->size() >> 1, 1, 16),
-                                 util::ToInlineBinaryView("no inlined 1"),
-                             }));
+    ASSERT_OK_AND_ASSIGN(
+        array, MakeBinaryViewArray<Type>(
+                   {buffer_a, buffer_b},
+                   {
+                       util::ToBinaryView(
+                           "bbbb", static_cast<int32_t>(buffer_b->size() >> 1), 1, 16),
+                       util::ToInlineBinaryView("inlined 1"),
+                   }));
     ASSERT_OK_AND_ASSIGN(compacted_array, array->CompactArray());
     ASSERT_EQ(compacted_array->data()->buffers.size(), 3);
     ASSERT_EQ(compacted_array->data()->buffers[2]->size(), 16);
     AssertArraysEqual(*array, *compacted_array);
   }
   void TestSliced() {
-    auto array = internal::checked_pointer_cast<TypeArray>(
+    auto array = internal::checked_pointer_cast<ArrayType>(
         ArrayFromJSON(type_, R"(["a","b","c"])"));
-    auto sliced_array = internal::checked_pointer_cast<TypeArray>(array->Slice(1, 2));
+    auto sliced_array = internal::checked_pointer_cast<ArrayType>(array->Slice(1, 2));
     ASSERT_OK_AND_ASSIGN(auto compacted_array, sliced_array->CompactArray());
-    AssertArraysEqual(*compacted_array, *sliced_array);
+    AssertArraysEqual(*sliced_array, *compacted_array);
   }
 
  private:
