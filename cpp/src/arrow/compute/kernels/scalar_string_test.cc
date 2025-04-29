@@ -113,17 +113,17 @@ class BaseTestStringKernels : public ::testing::Test {
 
 template <typename TestType>
 class TestBaseBinaryKernels : public BaseTestStringKernels<TestType> {};
-
+// support views
 TYPED_TEST_SUITE(TestBaseBinaryKernels, BaseBinaryArrowTypes);
 
 template <typename TestType>
 class TestBinaryKernels : public BaseTestStringKernels<TestType> {};
-
+// support views
 TYPED_TEST_SUITE(TestBinaryKernels, BinaryArrowTypes);
 
 template <typename TestType>
 class TestStringKernels : public BaseTestStringKernels<TestType> {};
-
+// support views
 TYPED_TEST_SUITE(TestStringKernels, StringArrowTypes);
 
 template <typename TestType>
@@ -1578,6 +1578,7 @@ TYPED_TEST(TestStringKernels, IsUpperAscii) {
 }
 
 TYPED_TEST(TestBaseBinaryKernels, MatchSubstring) {
+  ARROW_LOGGER_INFO("", this->type()->ToString());
   MatchSubstringOptions options{"ab"};
   this->CheckUnary("match_substring", "[]", boolean(), "[]", &options);
   this->CheckUnary("match_substring", R"(["abc", "acb", "cab", null, "bac", "AB"])",

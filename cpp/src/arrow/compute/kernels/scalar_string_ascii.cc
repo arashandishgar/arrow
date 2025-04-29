@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-
 #include <algorithm>
 #include <cctype>
 #include <iterator>
@@ -1412,13 +1411,12 @@ template <typename Type, typename Matcher, typename Enable = void>
 struct MatchSubstringImpl {
   static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out,
                      const Matcher* matcher) {
-
-    return Status::Invalid("Invalid State ",typeid(Type).name());
+    return Status::Invalid("Invalid State ", typeid(Type).name());
   }
 };
 
 template <typename Type, typename Matcher>
-struct MatchSubstringImpl<Type, Matcher, enable_if_t<is_base_binary_type<Type>::value>> {
+struct MatchSubstringImpl<Type, Matcher, enable_if_base_binary<Type>> {
   using offset_type = typename Type::offset_type;
 
   static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out,
@@ -1444,7 +1442,7 @@ struct MatchSubstringImpl<Type, Matcher, enable_if_t<is_base_binary_type<Type>::
   }
 };
 template <typename Type, typename Matcher>
-struct MatchSubstringImpl<Type, Matcher, enable_if_t<is_binary_like_type<Type>::value>> {
+struct MatchSubstringImpl<Type, Matcher, enable_if_binary_view_like<Type>> {
   using c_type = BinaryViewType::c_type;
 
   static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out,
@@ -1456,7 +1454,7 @@ struct MatchSubstringImpl<Type, Matcher, enable_if_t<is_binary_like_type<Type>::
           FirstTimeBitmapWriter bitmap_writer(output, output_offset, length);
           for (int64_t i = 0; i < length; ++i) {
             const c_type& view = view_buffer[i];
-            auto data = util::FromBinaryView(view, output);
+            auto data = util::FromBinaryView(view, data_buffer);
             if (matcher->Match(data)) {
               bitmap_writer.Set();
             }
@@ -1727,14 +1725,27 @@ void AddAsciiStringMatchSubstring(FunctionRegistry* registry) {
       DCHECK_OK(
           func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
     }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec =
+          GenerateBinaryViewToBinaryView<MatchSubstring, PlainSubstringMatcher>(ty);
+      DCHECK_OK(
+          func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
+    }
     DCHECK_OK(registry->AddFunction(std::move(func)));
   }
+
   {
     auto func =
         std::make_shared<ScalarFunction>("starts_with", Arity::Unary(), starts_with_doc);
     for (const auto& ty : BaseBinaryTypes()) {
       auto exec =
           GenerateVarBinaryToVarBinary<MatchSubstring, PlainStartsWithMatcher>(ty);
+      DCHECK_OK(
+          func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
+    }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec =
+          GenerateBinaryViewToBinaryView<MatchSubstring, PlainStartsWithMatcher>(ty);
       DCHECK_OK(
           func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
     }
@@ -1745,6 +1756,12 @@ void AddAsciiStringMatchSubstring(FunctionRegistry* registry) {
         std::make_shared<ScalarFunction>("ends_with", Arity::Unary(), ends_with_doc);
     for (const auto& ty : BaseBinaryTypes()) {
       auto exec = GenerateVarBinaryToVarBinary<MatchSubstring, PlainEndsWithMatcher>(ty);
+      DCHECK_OK(
+          func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
+    }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec =
+          GenerateBinaryViewToBinaryView<MatchSubstring, PlainEndsWithMatcher>(ty);
       DCHECK_OK(
           func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
     }
@@ -1759,6 +1776,12 @@ void AddAsciiStringMatchSubstring(FunctionRegistry* registry) {
       DCHECK_OK(
           func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
     }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec =
+          GenerateBinaryViewToBinaryView<MatchSubstring, RegexSubstringMatcher>(ty);
+      DCHECK_OK(
+          func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
+    }
     DCHECK_OK(registry->AddFunction(std::move(func)));
   }
   {
@@ -1766,6 +1789,11 @@ void AddAsciiStringMatchSubstring(FunctionRegistry* registry) {
         std::make_shared<ScalarFunction>("match_like", Arity::Unary(), match_like_doc);
     for (const auto& ty : BaseBinaryTypes()) {
       auto exec = GenerateVarBinaryToVarBinary<MatchLike>(ty);
+      DCHECK_OK(
+          func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
+    }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec = GenerateBinaryViewToBinaryView<MatchLike>(ty);
       DCHECK_OK(
           func->AddKernel({ty}, boolean(), std::move(exec), MatchSubstringState::Init));
     }
@@ -2291,6 +2319,12 @@ void AddAsciiStringReplaceSubstring(FunctionRegistry* registry) {
       kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
       DCHECK_OK(func->AddKernel(std::move(kernel)));
     }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec = GenerateBinaryViewToBinaryView<ReplaceSubstringPlain>(ty);
+      ScalarKernel kernel{{ty}, ty, std::move(exec), ReplaceState::Init};
+      kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
+      DCHECK_OK(func->AddKernel(std::move(kernel)));
+    }
     DCHECK_OK(registry->AddFunction(std::move(func)));
   }
 #ifdef ARROW_WITH_RE2
@@ -2299,6 +2333,12 @@ void AddAsciiStringReplaceSubstring(FunctionRegistry* registry) {
         "replace_substring_regex", Arity::Unary(), replace_substring_regex_doc);
     for (const auto& ty : BaseBinaryTypes()) {
       auto exec = GenerateVarBinaryToVarBinary<ReplaceSubstringRegex>(ty);
+      ScalarKernel kernel{{ty}, ty, std::move(exec), ReplaceState::Init};
+      kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
+      DCHECK_OK(func->AddKernel(std::move(kernel)));
+    }
+    for (const auto& ty : BinaryViewTypes()) {
+      auto exec = GenerateBinaryViewToBinaryView<ReplaceSubstringRegex>(ty);
       ScalarKernel kernel{{ty}, ty, std::move(exec), ReplaceState::Init};
       kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
       DCHECK_OK(func->AddKernel(std::move(kernel)));
@@ -3753,7 +3793,6 @@ void RegisterScalarStringAscii(FunctionRegistry* registry) {
   AddAsciiStringReverse(registry);
   AddAsciiStringTrim(registry);
   AddAsciiStringPad(registry);
-  // TODO(ARASH) Start from here.
   AddAsciiStringMatchSubstring(registry);
   AddAsciiStringFindSubstring(registry);
   AddAsciiStringCountSubstring(registry);
@@ -3761,6 +3800,7 @@ void RegisterScalarStringAscii(FunctionRegistry* registry) {
 #ifdef ARROW_WITH_RE2
   AddAsciiStringExtractRegex(registry);
 #endif
+  // TODO(Arash)
   AddAsciiStringReplaceSlice(registry);
   AddAsciiStringSlice(registry);
   AddAsciiStringSplitPattern(registry);
