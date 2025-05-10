@@ -77,7 +77,7 @@ struct ARROW_EXPORT ArrayStatistics {
   /// \brief The number of distinct values, may not be set
   std::optional<int64_t> distinct_count = std::nullopt;
 
-  /// \brief The average size in bytes of a row in the target column, may not be set
+  /// \brief The average size in bytes of a row in an array, may not be set
   std::optional<double> average_byte_width = std::nullopt;
 
   /// \brief Whether the average_byte_width value is exact or not
