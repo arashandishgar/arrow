@@ -122,7 +122,7 @@ class ARROW_EXPORT RecordBatch {
   ///
   /// Setting \ref arrow::EqualOptions::use_atol to true is equivalent to
   /// using \ref arrow::RecordBatch::ApproxEquals Although, Schema comparison is included,
-  /// and inclusion of schema metadata depends on \ref check_metadata.
+  /// and inclusion of schema metadata depends on \p check_metadata .
   ///
   /// \param[in] other the RecordBatch to compare with
   /// \param[in] check_metadata if true, check that Schema metadata is the same
